@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ruff_cache/
+.pyright/
+.DS_Store
+
+# Outputs
+results/
+results_supervised/
+results_experiments/
+lightning_logs/
+*.ckpt
+
+# EfficientAd auto-downloads imagenette (~1.5 GB) for its penalty term.
+datasets/
+
+# Local dataset working copies (keep raw train/ tracked if desired)
+dataset/train/
+dataset/test/
