@@ -10,6 +10,8 @@ __pycache__/
 results/
 results_supervised/
 results_experiments/
+predictions/
+submissions/
 lightning_logs/
 *.ckpt
 
@@ -19,3 +21,7 @@ datasets/
 # Local dataset working copies (keep raw train/ tracked if desired)
 dataset/train/
 dataset/test/
+dataset/split_manifest.csv
+
+# Submission bundle
+copper-pipe*.zip

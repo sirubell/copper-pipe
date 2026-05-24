@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import logging
 import random
+import shutil
 import sys
 from pathlib import Path
 
@@ -22,7 +23,9 @@ LOGGER = logging.getLogger("train_anomalib")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--data_root", type=Path, default=Path("./dataset"))
     parser.add_argument("--image_size", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=8)
@@ -100,9 +103,14 @@ def main() -> int:
         MODEL_TRAIN_BATCH_SIZE,
     )
     from copper_pipe.reporting import compare_and_save
-    from copper_pipe.training import build_engine, run_engine_test, train_one_model
+    from copper_pipe.training import build_engine, find_checkpoint, run_engine_test, train_one_model
 
-    LOGGER.info("anomalib %s, output_dir=%s, data_root=%s", anomalib.__version__, args.output_dir, args.data_root)
+    LOGGER.info(
+        "anomalib %s, output_dir=%s, data_root=%s",
+        anomalib.__version__,
+        args.output_dir,
+        args.data_root,
+    )
 
     if not (args.data_root / "train" / "good").is_dir():
         raise SystemExit(
@@ -116,9 +124,19 @@ def main() -> int:
         train_bs = MODEL_TRAIN_BATCH_SIZE[name] or args.batch_size
         max_epochs = MODEL_MAX_EPOCHS[name]
         if image_size != args.image_size:
-            LOGGER.info("%s requires image_size=%d (overriding --image_size=%d)", name, image_size, args.image_size)
+            LOGGER.info(
+                "%s requires image_size=%d (overriding --image_size=%d)",
+                name,
+                image_size,
+                args.image_size,
+            )
         if train_bs != args.batch_size:
-            LOGGER.info("%s requires train_batch_size=%d (overriding --batch_size=%d)", name, train_bs, args.batch_size)
+            LOGGER.info(
+                "%s requires train_batch_size=%d (overriding --batch_size=%d)",
+                name,
+                train_bs,
+                args.batch_size,
+            )
 
         datamodule = build_datamodule(
             data_root=args.data_root,
@@ -136,7 +154,21 @@ def main() -> int:
         raw_test = run_engine_test(model=model, datamodule=datamodule, engine=engine)
         LOGGER.info("engine.test() raw output: %s", raw_test)
 
-        result = evaluate_one_model(model_name=name, model=model, engine=engine, datamodule=datamodule)
+        # Copy the auto-saved Lightning ckpt to a stable path for predict.py.
+        ckpt_src = find_checkpoint(engine)
+        if ckpt_src is not None:
+            ckpt_dst = model_output / "checkpoint.ckpt"
+            ckpt_dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ckpt_src, ckpt_dst)
+            LOGGER.info("checkpoint: %s", ckpt_dst)
+        else:
+            LOGGER.warning(
+                "could not locate a .ckpt for %s; predict.py will need a manual path", name
+            )
+
+        result = evaluate_one_model(
+            model_name=name, model=model, engine=engine, datamodule=datamodule
+        )
         LOGGER.info(
             "%s: AUROC=%.4f F1=%.4f Acc=%.4f P=%.4f R=%.4f thr=%.4f ms=%.3f",
             name,
@@ -159,6 +191,12 @@ def main() -> int:
     print(table)
     print()
     print(f"CSV: {args.output_dir / 'comparison.csv'}")
+    print()
+    print("Checkpoints (use with predict.py --checkpoint):")
+    for name in args.models:
+        ckpt = args.output_dir / name / "checkpoint.ckpt"
+        if ckpt.is_file():
+            print(f"  {name:<12} {ckpt}")
     return 0
 
 

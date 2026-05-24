@@ -1,9 +1,22 @@
 """Split a copper-pipe-style dataset (normal + abnormal folders) into the
-anomalib ``Folder`` layout:
+anomalib ``Folder`` layout.
+
+Two layouts are supported via ``--layout``:
+
+``split`` (legacy, internal-evaluation mode)::
 
     <output>/train/good/      (train_ratio * |normal|)
     <output>/test/good/       (remainder of normal)
     <output>/test/defect/     (all abnormal)
+
+``full`` (recommended for final submission — train on all available data,
+let the TA's held-out test set be the true evaluation)::
+
+    <output>/train/good/      all normal images
+    <output>/test/good/       symlinks to the same normal images
+                              (purely so anomalib's post-processor can
+                              calibrate its min/max normalization range)
+    <output>/test/defect/     all abnormal images
 
 Also writes ``<output>/split_manifest.csv`` for traceability.
 """
@@ -80,6 +93,7 @@ def run_split(
     seed: int,
     mode: str,
     force: bool,
+    layout: str = "full",
 ) -> int:
     normal_files = list_images(normal_src)
     abnormal_files = list_images(abnormal_src)
@@ -97,26 +111,43 @@ def run_split(
             shutil.rmtree(d)
         d.mkdir(parents=True, exist_ok=True)
 
-    train_normal, test_normal = split_normal(normal_files, train_ratio, seed)
+    if layout == "split":
+        train_normal, test_normal = split_normal(normal_files, train_ratio, seed)
+    elif layout == "full":
+        # Use every normal image for training. Mirror them into test/good as
+        # symlinks so anomalib's post-processor still sees both classes
+        # during validation/test (needed to calibrate min/max normalization),
+        # but no images are actually held out from training.
+        train_normal = list(normal_files)
+        test_normal = list(normal_files)
+    else:
+        raise ValueError(f"unknown layout: {layout!r}")
 
-    # Sanity: no overlap between train/good and test/good.
-    train_names = {p.name for p in train_normal}
-    test_names = {p.name for p in test_normal}
-    overlap = train_names & test_names
-    if overlap:
-        raise RuntimeError(f"BUG: overlap between train/good and test/good: {sorted(overlap)[:5]}…")
+    # Sanity: in 'split' layout there must be no overlap; in 'full' the same files
+    # appear in both train and test by design, so we skip the overlap check.
+    if layout == "split":
+        train_names = {p.name for p in train_normal}
+        test_names = {p.name for p in test_normal}
+        overlap = train_names & test_names
+        if overlap:
+            raise RuntimeError(
+                f"BUG: overlap between train/good and test/good: {sorted(overlap)[:5]}…"
+            )
 
     manifest_rows: list[tuple[str, str, str, str]] = []
 
-    def _emit(files: list[Path], target_dir: Path, split: str, label: str) -> None:
+    def _emit(files: list[Path], target_dir: Path, split: str, label: str, place_mode: str) -> None:
         for src in files:
             dst = target_dir / src.name
-            place_file(src, dst, mode)
+            place_file(src, dst, place_mode)
             manifest_rows.append((split, label, str(src), str(dst)))
 
-    _emit(train_normal, train_dir, "train", "good")
-    _emit(test_normal, test_good_dir, "test", "good")
-    _emit(abnormal_files, test_defect_dir, "test", "defect")
+    _emit(train_normal, train_dir, "train", "good", mode)
+    # In 'full' layout, force symlinks for the mirrored test/good copies
+    # regardless of --mode, so we don't duplicate every normal image on disk.
+    test_good_mode = "symlink" if layout == "full" else mode
+    _emit(test_normal, test_good_dir, "test", "good", test_good_mode)
+    _emit(abnormal_files, test_defect_dir, "test", "defect", mode)
 
     manifest_path = output / "split_manifest.csv"
     output.mkdir(parents=True, exist_ok=True)
@@ -126,6 +157,7 @@ def run_split(
         writer.writerows(manifest_rows)
 
     LOGGER.info("final stats:")
+    LOGGER.info("  layout       = %s", layout)
     LOGGER.info("  train/good   = %d", len(train_normal))
     LOGGER.info("  test/good    = %d", len(test_normal))
     LOGGER.info("  test/defect  = %d", len(abnormal_files))
@@ -135,14 +167,36 @@ def run_split(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--normal_src", type=Path, required=True, help="folder of normal images")
-    parser.add_argument("--abnormal_src", type=Path, required=True, help="folder of abnormal images")
+    parser.add_argument(
+        "--abnormal_src", type=Path, required=True, help="folder of abnormal images"
+    )
     parser.add_argument("--output", type=Path, default=Path("./dataset"), help="output root")
-    parser.add_argument("--train_ratio", type=float, default=0.78, help="fraction of normal → train")
+    parser.add_argument(
+        "--train_ratio",
+        type=float,
+        default=0.78,
+        help="fraction of normal → train (split layout only)",
+    )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--mode", choices=("copy", "symlink"), default="copy")
-    parser.add_argument("--force", action="store_true", help="overwrite existing output without asking")
+    parser.add_argument(
+        "--mode",
+        choices=("copy", "symlink"),
+        default="copy",
+        help="how to place files (full layout always symlinks test/good)",
+    )
+    parser.add_argument(
+        "--layout",
+        choices=("full", "split"),
+        default="full",
+        help="full: train on all normal (recommended for submission). split: hold out 22%% for internal eval.",
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="overwrite existing output without asking"
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     return parser.parse_args()
 
@@ -161,6 +215,7 @@ def main() -> int:
         seed=args.seed,
         mode=args.mode,
         force=args.force,
+        layout=args.layout,
     )
 
 

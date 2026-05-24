@@ -34,6 +34,21 @@ def train_one_model(model: Any, datamodule: Any, engine: Any) -> None:
     LOGGER.info("fit complete")
 
 
+def find_checkpoint(engine: Any) -> Path | None:
+    """Locate the .ckpt anomalib wrote during fit() (best, else last, else scan dir)."""
+    cb = getattr(engine.trainer, "checkpoint_callback", None)
+    for attr in ("best_model_path", "last_model_path"):
+        path = getattr(cb, attr, None) if cb is not None else None
+        if path:
+            p = Path(path)
+            if p.is_file():
+                return p
+    # Fallback: scan default_root_dir for *.ckpt and take the newest.
+    root = Path(getattr(engine.trainer, "default_root_dir", "."))
+    ckpts = sorted(root.rglob("*.ckpt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return ckpts[0] if ckpts else None
+
+
 def run_engine_test(model: Any, datamodule: Any, engine: Any) -> list[dict[str, float]]:
     """Run engine.test() and return the raw metric list (one dict per test loop)."""
     LOGGER.info("running engine.test()")
